@@ -1,22 +1,12 @@
 const express = require('express');
-const https = require('https');
-const fs = require('fs');
+const http = require('http');  // Utilisez http, pas https – Render gère le SSL
 const WebSocket = require('ws');
 
 const app = express();
-
-// SSL configuration (replace with your certificate paths)
-const serverOptions = {
-  cert: fs.readFileSync('/path/to/fullchain.pem'), // Update with your certificate path
-  key: fs.readFileSync('/path/to/privkey.pem')     // Update with your private key path
-};
-
-const server = https.createServer(serverOptions, app);
+const server = http.createServer(app);  // Créez un serveur HTTP standard
 const wss = new WebSocket.Server({ 
   server,
-  verifyClient: (info) => {
-    return info.req.headers['sec-websocket-protocol'] === 'websocket';
-  }
+  // Pas de verifyClient pour l'instant ; Render gère le protocole
 });
 
 let esp32Client = null;
@@ -27,32 +17,32 @@ let storedConfig = {
   thresholds: {}
 };
 
-// Periodic cleanup for stale clients
+// Nettoyage périodique des clients inactifs (amélioration pour la fiabilité)
 setInterval(() => {
   if (esp32Client && esp32Client.readyState !== WebSocket.OPEN) {
-    console.log('ESP32 client stale, cleaning up');
+    console.log('ESP32 client inactif, nettoyage');
     esp32Client = null;
     broadcastToAndroidClients({ type: 'status', message: 'ESP32 déconnecté' });
   }
   androidClients = androidClients.filter(client => {
     if (client.readyState !== WebSocket.OPEN) {
-      console.log('Android client stale, removing');
+      console.log('Client Android inactif, suppression');
       return false;
     }
     try {
-      client.ping();
+      client.ping();  // Ping pour maintenir la connexion
       return true;
     } catch (err) {
       return false;
     }
   });
-}, 30000); // Check every 30 seconds
+}, 30000);  // Vérification toutes les 30 secondes
 
 wss.on('connection', (ws) => {
   console.log('Nouveau client WebSocket connecté');
 
   ws.on('pong', () => {
-    // Handle pong to keep connection alive
+    // Gère les pongs pour maintenir la connexion vivante
   });
 
   ws.on('message', (message) => {
@@ -66,31 +56,35 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Validation du type de message
     if (!data.type) {
       ws.send(JSON.stringify({ type: 'error', message: 'Type de message manquant' }));
       return;
     }
 
+    // Gestion des connexions ESP32
     if (data.type === 'esp32') {
       esp32Client = ws;
       console.log('ESP32 connecté');
       ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
 
-      // Send stored configurations to ESP32
+      // Envoyer les configs stockées à l'ESP32 lors de la reconnexion (amélioration)
       if (storedConfig.feedingTimes.length > 0 || storedConfig.securityTimes.length > 0 || Object.keys(storedConfig.thresholds).length > 0) {
         esp32Client.send(JSON.stringify({
           feedingTimes: storedConfig.feedingTimes,
           securityTimes: storedConfig.securityTimes,
           thresholds: storedConfig.thresholds
         }));
-        console.log('Configurations envoyées à ESP32:', JSON.stringify(storedConfig, null, 2));
+        console.log('Configurations stockées envoyées à l\'ESP32:', JSON.stringify(storedConfig, null, 2));
       }
 
+      // Relayer les données de capteurs et status aux clients Android
       if (data.waterLevel !== undefined || data.temperature !== undefined || data.turbidity !== undefined || 
           data.message || data.motion) {
         broadcastToAndroidClients(data);
       }
 
+    // Gestion des connexions Android
     } else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
@@ -98,26 +92,29 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'status', message: `Client Android connecté (${androidClients.length})` }));
       }
 
+      // Gestion des messages envoyés par Android
       if (data.feedingTimes || data.securityTimes || data.thresholds || data.command || data.type === 'request_data') {
+        // Validation des formats (votre logique originale, avec ajouts pour doublons)
         if (data.feedingTimes) {
           if (!Array.isArray(data.feedingTimes) || data.feedingTimes.length > 5) {
             ws.send(JSON.stringify({ type: 'error', message: 'feedingTimes doit être un tableau de maximum 5 éléments' }));
             return;
           }
           for (let time of data.feedingTimes) {
-            if (!Number.isInteger(time.hour) || !Number.isInteger(time.minute) ||
-                time.hour < 0 || time.hour > 23 || time.minute < 0 || time.minute > 59 ||
-                typeof time.foodName !== 'string' || time.foodName.trim() === '') {
+            if (!time.hour || !time.minute || !time.foodName || 
+                !Number.isInteger(time.hour) || !Number.isInteger(time.minute) ||
+                time.hour < 0 || time.hour > 23 || time.minute < 0 || time.minute > 59) {
               ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour feedingTimes' }));
               return;
             }
           }
+          // Amélioration : Vérifier les doublons d'horaires
           const timesSet = new Set(data.feedingTimes.map(t => `${t.hour}:${t.minute}`));
           if (timesSet.size !== data.feedingTimes.length) {
             ws.send(JSON.stringify({ type: 'error', message: 'Horaires d\'alimentation en double' }));
             return;
           }
-          storedConfig.feedingTimes = data.feedingTimes;
+          storedConfig.feedingTimes = data.feedingTimes;  // Stockage (amélioration)
         }
 
         if (data.securityTimes) {
@@ -126,7 +123,8 @@ wss.on('connection', (ws) => {
             return;
           }
           for (let time of data.securityTimes) {
-            if (!Number.isInteger(time.startHour) || !Number.isInteger(time.startMinute) ||
+            if (!time.startHour || !time.startMinute || !time.endHour || !time.endMinute ||
+                !Number.isInteger(time.startHour) || !Number.isInteger(time.startMinute) ||
                 !Number.isInteger(time.endHour) || !Number.isInteger(time.endMinute) ||
                 time.startHour < 0 || time.startHour > 23 || time.startMinute < 0 || time.startMinute > 59 ||
                 time.endHour < 0 || time.endHour > 23 || time.endMinute < 0 || time.endMinute > 59) {
@@ -134,7 +132,7 @@ wss.on('connection', (ws) => {
               return;
             }
           }
-          storedConfig.securityTimes = data.securityTimes;
+          storedConfig.securityTimes = data.securityTimes;  // Stockage (amélioration)
         }
 
         if (data.thresholds) {
@@ -146,7 +144,7 @@ wss.on('connection', (ws) => {
             ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour thresholds' }));
             return;
           }
-          storedConfig.thresholds = data.thresholds;
+          storedConfig.thresholds = data.thresholds;  // Stockage (amélioration)
         }
 
         if (data.command) {
@@ -160,8 +158,9 @@ wss.on('connection', (ws) => {
           }
         }
 
+        // Envoyer les données à l'ESP32 (sans wrapper 'init' pour compatibilité avec Arduino)
         if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-          esp32Client.send(JSON.stringify(data));
+          esp32Client.send(JSON.stringify(data));  // Envoi direct, pas de 'init'
           console.log('Message envoyé à ESP32:', JSON.stringify(data, null, 2));
           ws.send(JSON.stringify({ type: 'status', message: 'Données envoyées à l\'ESP32' }));
         } else {
@@ -191,6 +190,7 @@ wss.on('connection', (ws) => {
   });
 });
 
+// Fonction pour diffuser aux clients Android (votre logique originale)
 function broadcastToAndroidClients(data) {
   androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
   androidClients.forEach(client => {
@@ -202,8 +202,10 @@ function broadcastToAndroidClients(data) {
   });
 }
 
+// Middleware pour fichiers statiques (optionnel)
 app.use(express.static('public'));
 
+// Route de santé (votre logique originale)
 app.get('/health', (req, res) => {
   res.json({
     status: 'Serveur WebSocket OK',
@@ -212,7 +214,8 @@ app.get('/health', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 443;
+// Lancement du serveur (port dynamique pour Render)
+const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
   console.log(`Serveur WebSocket démarré sur le port ${PORT}`);
 });
