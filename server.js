@@ -1,21 +1,64 @@
 const express = require('express');
-const http = require('http');
+const https = require('https');
+const fs = require('fs');
 const WebSocket = require('ws');
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+
+// SSL configuration (replace with your certificate paths)
+const serverOptions = {
+  cert: fs.readFileSync('/path/to/fullchain.pem'), // Update with your certificate path
+  key: fs.readFileSync('/path/to/privkey.pem')     // Update with your private key path
+};
+
+const server = https.createServer(serverOptions, app);
+const wss = new WebSocket.Server({ 
+  server,
+  verifyClient: (info) => {
+    return info.req.headers['sec-websocket-protocol'] === 'websocket';
+  }
+});
 
 let esp32Client = null;
 let androidClients = [];
+let storedConfig = {
+  feedingTimes: [],
+  securityTimes: [],
+  thresholds: {}
+};
+
+// Periodic cleanup for stale clients
+setInterval(() => {
+  if (esp32Client && esp32Client.readyState !== WebSocket.OPEN) {
+    console.log('ESP32 client stale, cleaning up');
+    esp32Client = null;
+    broadcastToAndroidClients({ type: 'status', message: 'ESP32 déconnecté' });
+  }
+  androidClients = androidClients.filter(client => {
+    if (client.readyState !== WebSocket.OPEN) {
+      console.log('Android client stale, removing');
+      return false;
+    }
+    try {
+      client.ping();
+      return true;
+    } catch (err) {
+      return false;
+    }
+  });
+}, 30000); // Check every 30 seconds
 
 wss.on('connection', (ws) => {
   console.log('Nouveau client WebSocket connecté');
 
+  ws.on('pong', () => {
+    // Handle pong to keep connection alive
+  });
+
   ws.on('message', (message) => {
     let data;
     try {
-      data = JSON.parse(message);
+      data = JSON.parse(message.toString());
       console.log('Message reçu:', JSON.stringify(data, null, 2));
     } catch (err) {
       console.error('Erreur de parsing JSON:', err.message);
@@ -23,25 +66,31 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    // Validation du type de message
     if (!data.type) {
       ws.send(JSON.stringify({ type: 'error', message: 'Type de message manquant' }));
       return;
     }
 
-    // Gestion des connexions ESP32
     if (data.type === 'esp32') {
       esp32Client = ws;
       console.log('ESP32 connecté');
       ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
 
-      // Relayer les données de capteurs et status aux clients Android
+      // Send stored configurations to ESP32
+      if (storedConfig.feedingTimes.length > 0 || storedConfig.securityTimes.length > 0 || Object.keys(storedConfig.thresholds).length > 0) {
+        esp32Client.send(JSON.stringify({
+          feedingTimes: storedConfig.feedingTimes,
+          securityTimes: storedConfig.securityTimes,
+          thresholds: storedConfig.thresholds
+        }));
+        console.log('Configurations envoyées à ESP32:', JSON.stringify(storedConfig, null, 2));
+      }
+
       if (data.waterLevel !== undefined || data.temperature !== undefined || data.turbidity !== undefined || 
           data.message || data.motion) {
         broadcastToAndroidClients(data);
       }
 
-    // Gestion des connexions Android
     } else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
@@ -49,22 +98,26 @@ wss.on('connection', (ws) => {
         ws.send(JSON.stringify({ type: 'status', message: `Client Android connecté (${androidClients.length})` }));
       }
 
-      // Gestion des messages envoyés par Android
-      if (data.feedingTimes || data.securityTimes || data.thresholds || data.command || data.wifi_config || data.reset_date || data.type === 'request_data') {
-        // Validation des formats
+      if (data.feedingTimes || data.securityTimes || data.thresholds || data.command || data.type === 'request_data') {
         if (data.feedingTimes) {
           if (!Array.isArray(data.feedingTimes) || data.feedingTimes.length > 5) {
             ws.send(JSON.stringify({ type: 'error', message: 'feedingTimes doit être un tableau de maximum 5 éléments' }));
             return;
           }
           for (let time of data.feedingTimes) {
-            if (!time.hour || !time.minute || !time.foodName || 
-                !Number.isInteger(time.hour) || !Number.isInteger(time.minute) ||
-                time.hour < 0 || time.hour > 23 || time.minute < 0 || time.minute > 59) {
+            if (!Number.isInteger(time.hour) || !Number.isInteger(time.minute) ||
+                time.hour < 0 || time.hour > 23 || time.minute < 0 || time.minute > 59 ||
+                typeof time.foodName !== 'string' || time.foodName.trim() === '') {
               ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour feedingTimes' }));
               return;
             }
           }
+          const timesSet = new Set(data.feedingTimes.map(t => `${t.hour}:${t.minute}`));
+          if (timesSet.size !== data.feedingTimes.length) {
+            ws.send(JSON.stringify({ type: 'error', message: 'Horaires d\'alimentation en double' }));
+            return;
+          }
+          storedConfig.feedingTimes = data.feedingTimes;
         }
 
         if (data.securityTimes) {
@@ -73,8 +126,7 @@ wss.on('connection', (ws) => {
             return;
           }
           for (let time of data.securityTimes) {
-            if (!time.startHour || !time.startMinute || !time.endHour || !time.endMinute ||
-                !Number.isInteger(time.startHour) || !Number.isInteger(time.startMinute) ||
+            if (!Number.isInteger(time.startHour) || !Number.isInteger(time.startMinute) ||
                 !Number.isInteger(time.endHour) || !Number.isInteger(time.endMinute) ||
                 time.startHour < 0 || time.startHour > 23 || time.startMinute < 0 || time.startMinute > 59 ||
                 time.endHour < 0 || time.endHour > 23 || time.endMinute < 0 || time.endMinute > 59) {
@@ -82,6 +134,7 @@ wss.on('connection', (ws) => {
               return;
             }
           }
+          storedConfig.securityTimes = data.securityTimes;
         }
 
         if (data.thresholds) {
@@ -93,14 +146,7 @@ wss.on('connection', (ws) => {
             ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour thresholds' }));
             return;
           }
-        }
-
-        if (data.wifi_config) {
-          if (!data.wifi_config.ssid || typeof data.wifi_config.ssid !== 'string' ||
-              !data.wifi_config.password || typeof data.wifi_config.password !== 'string') {
-            ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour wifi_config' }));
-            return;
-          }
+          storedConfig.thresholds = data.thresholds;
         }
 
         if (data.command) {
@@ -114,32 +160,10 @@ wss.on('connection', (ws) => {
           }
         }
 
-        if (data.reset_date) {
-          if (typeof data.reset_date.timestamp !== 'number') {
-            ws.send(JSON.stringify({ type: 'error', message: 'Format invalide pour reset_date' }));
-            return;
-          }
-        }
-
-        // Envoyer les données à l'ESP32
         if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-          // Si c'est une initialisation, envoyer un message de type 'init'
-          if (data.feedingTimes || data.securityTimes || data.thresholds) {
-            const initMessage = {
-              type: 'init',
-              feedingTimes: data.feedingTimes || [],
-              securityTimes: data.securityTimes || [],
-              thresholds: data.thresholds || {}
-            };
-            esp32Client.send(JSON.stringify(initMessage));
-            console.log('Message d\'initialisation envoyé à ESP32:', JSON.stringify(initMessage, null, 2));
-            ws.send(JSON.stringify({ type: 'status', message: 'Données d\'initialisation envoyées à l\'ESP32' }));
-          } else {
-            // Envoyer les autres messages directement
-            esp32Client.send(JSON.stringify(data));
-            console.log('Message envoyé à ESP32:', JSON.stringify(data, null, 2));
-            ws.send(JSON.stringify({ type: 'status', message: 'Données envoyées à l\'ESP32' }));
-          }
+          esp32Client.send(JSON.stringify(data));
+          console.log('Message envoyé à ESP32:', JSON.stringify(data, null, 2));
+          ws.send(JSON.stringify({ type: 'status', message: 'Données envoyées à l\'ESP32' }));
         } else {
           ws.send(JSON.stringify({ type: 'status', message: 'ESP32 non connecté' }));
           console.log('ESP32 non connecté, message non envoyé');
@@ -167,7 +191,6 @@ wss.on('connection', (ws) => {
   });
 });
 
-// Fonction pour diffuser aux clients Android
 function broadcastToAndroidClients(data) {
   androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
   androidClients.forEach(client => {
@@ -179,10 +202,8 @@ function broadcastToAndroidClients(data) {
   });
 }
 
-// Middleware pour fichiers statiques (optionnel)
 app.use(express.static('public'));
 
-// Route de santé
 app.get('/health', (req, res) => {
   res.json({
     status: 'Serveur WebSocket OK',
@@ -191,8 +212,7 @@ app.get('/health', (req, res) => {
   });
 });
 
-// Lancement du serveur
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 443;
 server.listen(PORT, () => {
   console.log(`Serveur WebSocket démarré sur le port ${PORT}`);
 });
