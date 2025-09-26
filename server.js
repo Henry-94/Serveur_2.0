@@ -21,6 +21,10 @@ let storedConfig = {
     minTemperature: 25.0,
     maxTemperature: 30.0,
     turbidityThreshold: 70.0
+  },
+  wifiConfig: {
+    ssid: "i98",
+    password: "12345678"
   }
 };
 let esp32Client = null;
@@ -102,6 +106,25 @@ app.post('/set-thresholds', (req, res) => {
   }
 });
 
+// Route POST pour configurer les identifiants WiFi
+app.post('/set-wifi-config', (req, res) => {
+  try {
+    const { wifiConfig } = req.body;
+    if (typeof wifiConfig !== 'object' ||
+        typeof wifiConfig.ssid !== 'string' ||
+        typeof wifiConfig.password !== 'string') {
+      return res.status(400).json({ message: 'Format invalide pour wifiConfig' });
+    }
+    storedConfig.wifiConfig = wifiConfig;
+    console.log(`Identifiants WiFi reçus : ${JSON.stringify(wifiConfig, null, 2)} at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Identifiants WiFi configurés' });
+    broadcastToAndroidClients({ type: 'wifiConfig', data: wifiConfig });
+  } catch (error) {
+    console.error('Erreur dans /set-wifi-config:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
 // Route GET pour l'ESP32 - Horaires d'alimentation
 app.get('/feeding-times', (req, res) => {
   try {
@@ -135,6 +158,17 @@ app.get('/thresholds', (req, res) => {
   }
 });
 
+// Route GET pour l'ESP32 - Identifiants WiFi
+app.get('/wifi-config', (req, res) => {
+  try {
+    console.log(`Envoi des identifiants WiFi : ${JSON.stringify(storedConfig.wifiConfig, null, 2)} at ${new Date().toISOString()}`);
+    res.status(200).json({ wifiConfig: storedConfig.wifiConfig });
+  } catch (error) {
+    console.error('Erreur dans /wifi-config:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
 // Route GET pour vérifier l'état du serveur
 app.get('/health', (req, res) => {
   try {
@@ -149,7 +183,7 @@ app.get('/health', (req, res) => {
   }
 });
 
-// Gestion WebSocket pour les clients Android et ESP32
+// Gestion WebSocket pour les clients Android
 wss.on('connection', (ws) => {
   console.log('Nouveau client WebSocket connecté');
 
@@ -157,7 +191,7 @@ wss.on('connection', (ws) => {
     let data;
     try {
       data = JSON.parse(message.toString());
-      console.log('Message reçu:', JSON.stringify(data, null, 2));
+      console.log('Message reçu: ' + JSON.stringify(data, null, 2));
     } catch (err) {
       console.error('Erreur de parsing JSON:', err.message);
       ws.send(JSON.stringify({ type: 'error', message: `Erreur de parsing JSON: ${err.message}` }));
@@ -169,11 +203,7 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (data.type === 'esp32') {
-      esp32Client = ws;
-      console.log('Client ESP32 connecté');
-      ws.send(JSON.stringify({ type: 'status', statusType: 'connection', message: 'ESP32 connecté' }));
-    } else if (data.type === 'android') {
+    if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
         console.log('Client Android connecté, total:', androidClients.length);
@@ -181,13 +211,7 @@ wss.on('connection', (ws) => {
       }
     }
 
-    if (data.type === 'sensorData') {
-      // Diffuser les données des capteurs aux clients Android
-      broadcastToAndroidClients({ type: 'sensorData', data: data });
-    } else if (data.type === 'status') {
-      // Diffuser les statuts aux clients Android
-      broadcastToAndroidClients({ type: 'status', statusType: data.statusType, message: data.message });
-    } else if (data.type === 'android' && data.command) {
+    if (data.type === 'android' && data.command) {
       const validCommands = [
         'INLET_PUMP_ON', 'INLET_PUMP_OFF', 'OUTLET_PUMP_ON', 'OUTLET_PUMP_OFF',
         'SECURITY_MODE_ON', 'SECURITY_MODE_OFF', 'REPLACE_WATER'
@@ -208,14 +232,8 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    if (ws === esp32Client) {
-      esp32Client = null;
-      console.log('Client ESP32 déconnecté');
-      broadcastToAndroidClients({ type: 'status', statusType: 'connection', message: 'ESP32 déconnecté' });
-    } else {
-      androidClients = androidClients.filter(client => client !== ws);
-      console.log('Client Android déconnecté, total:', androidClients.length);
-    }
+    androidClients = androidClients.filter(client => client !== ws);
+    console.log('Client Android déconnecté, total:', androidClients.length);
   });
 
   ws.on('error', (error) => {
@@ -233,12 +251,6 @@ function broadcastToAndroidClients(data) {
     }
   });
 }
-
-// Gestion des erreurs globales
-app.use((err, req, res, next) => {
-  console.error('Erreur serveur:', err.stack);
-  res.status(500).json({ message: 'Erreur interne du serveur' });
-});
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
