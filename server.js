@@ -23,8 +23,8 @@ let storedConfig = {
     turbidityThreshold: 70.0
   },
   wifiConfig: {
-    ssid: "i98",
-    password: "12345678"
+    ssid: "Ra lala",
+    password: "123456789"
   }
 };
 let esp32Client = null;
