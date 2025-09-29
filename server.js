@@ -9,7 +9,7 @@ const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
 // Middleware
-app.use(cors()); // Autoriser requêtes cross-origin
+app.use(cors());
 app.use(bodyParser.json());
 app.use(bodyParser.urlencoded({ extended: true }));
 
@@ -30,13 +30,13 @@ let storedConfig = {
 let esp32Client = null;
 let androidClients = [];
 
-// Nettoyage périodique des clients Android inactifs
+// Nettoyage des clients inactifs
 setInterval(() => {
   androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
   console.log('Clients Android actifs:', androidClients.length);
 }, 30000);
 
-// Route POST pour configurer les horaires d'alimentation
+// Route POST pour les horaires d'alimentation
 app.post('/set-feeding-times', (req, res) => {
   try {
     const { feedingTimes } = req.body;
@@ -56,6 +56,7 @@ app.post('/set-feeding-times', (req, res) => {
     storedConfig.feedingTimes = feedingTimes;
     console.log(`Horaires d'alimentation reçus : ${JSON.stringify(feedingTimes, null, 2)} at ${new Date().toISOString()}`);
     res.status(200).json({ message: 'Horaires d\'alimentation configurés' });
+    broadcastToESP32({ type: 'feedingTimes', feedingTimes });
     broadcastToAndroidClients({ type: 'feedingTimes', data: feedingTimes });
   } catch (error) {
     console.error('Erreur dans /set-feeding-times:', error);
@@ -63,7 +64,7 @@ app.post('/set-feeding-times', (req, res) => {
   }
 });
 
-// Route POST pour configurer les intervalles de sécurité
+// Route POST pour les intervalles de sécurité
 app.post('/set-security-times', (req, res) => {
   try {
     const { securityTimes } = req.body;
@@ -71,13 +72,17 @@ app.post('/set-security-times', (req, res) => {
       return res.status(400).json({ message: 'securityTimes doit être un tableau de maximum 10 éléments' });
     }
     for (let time of securityTimes) {
-      if (!time.startTime || !time.endTime || !/^\d{4}$/.test(time.startTime) || !/^\d{4}$/.test(time.endTime)) {
-        return res.status(400).json({ message: 'Format invalide pour securityTimes (attendu : HHMM)' });
+      if (!Number.isInteger(time.startHour) || !Number.isInteger(time.startMinute) ||
+          !Number.isInteger(time.endHour) || !Number.isInteger(time.endMinute) ||
+          time.startHour < 0 || time.startHour > 23 || time.startMinute < 0 || time.startMinute > 59 ||
+          time.endHour < 0 || time.endHour > 23 || time.endMinute < 0 || time.endMinute > 59) {
+        return res.status(400).json({ message: 'Format invalide pour securityTimes' });
       }
     }
     storedConfig.securityTimes = securityTimes;
     console.log(`Intervalles de sécurité reçus : ${JSON.stringify(securityTimes, null, 2)} at ${new Date().toISOString()}`);
     res.status(200).json({ message: 'Intervalles de sécurité configurés' });
+    broadcastToESP32({ type: 'securityTimes', securityTimes });
     broadcastToAndroidClients({ type: 'securityTimes', data: securityTimes });
   } catch (error) {
     console.error('Erreur dans /set-security-times:', error);
@@ -85,7 +90,7 @@ app.post('/set-security-times', (req, res) => {
   }
 });
 
-// Route POST pour configurer les seuils
+// Route POST pour les seuils
 app.post('/set-thresholds', (req, res) => {
   try {
     const { thresholds } = req.body;
@@ -99,6 +104,7 @@ app.post('/set-thresholds', (req, res) => {
     storedConfig.thresholds = thresholds;
     console.log(`Seuils reçus : ${JSON.stringify(thresholds, null, 2)} at ${new Date().toISOString()}`);
     res.status(200).json({ message: 'Seuils configurés' });
+    broadcastToESP32({ type: 'thresholds', thresholds });
     broadcastToAndroidClients({ type: 'thresholds', data: thresholds });
   } catch (error) {
     console.error('Erreur dans /set-thresholds:', error);
@@ -106,21 +112,36 @@ app.post('/set-thresholds', (req, res) => {
   }
 });
 
-// Route POST pour configurer les identifiants WiFi
+// Route POST pour les identifiants WiFi
 app.post('/set-wifi-config', (req, res) => {
   try {
-    const { wifiConfig } = req.body;
-    if (typeof wifiConfig !== 'object' ||
-        typeof wifiConfig.ssid !== 'string' ||
-        typeof wifiConfig.password !== 'string') {
+    const { ssid, password } = req.body;
+    if (typeof ssid !== 'string' || typeof password !== 'string' || ssid.length === 0 || password.length < 8) {
       return res.status(400).json({ message: 'Format invalide pour wifiConfig' });
     }
-    storedConfig.wifiConfig = wifiConfig;
-    console.log(`Identifiants WiFi reçus : ${JSON.stringify(wifiConfig, null, 2)} at ${new Date().toISOString()}`);
+    storedConfig.wifiConfig = { ssid, password };
+    console.log(`Identifiants WiFi reçus : ${JSON.stringify(storedConfig.wifiConfig, null, 2)} at ${new Date().toISOString()}`);
     res.status(200).json({ message: 'Identifiants WiFi configurés' });
-    broadcastToAndroidClients({ type: 'wifiConfig', data: wifiConfig });
+    broadcastToESP32({ type: 'wifiConfig', wifiConfig: storedConfig.wifiConfig });
+    broadcastToAndroidClients({ type: 'wifiConfig', data: storedConfig.wifiConfig });
   } catch (error) {
     console.error('Erreur dans /set-wifi-config:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route POST pour redémarrer l'ESP32
+app.post('/restart-esp32', (req, res) => {
+  try {
+    const { command } = req.body;
+    if (command !== 'RESTART_ESP32') {
+      return res.status(400).json({ message: 'Commande invalide' });
+    }
+    console.log(`Commande de redémarrage reçue at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Commande de redémarrage envoyée' });
+    broadcastToESP32({ type: 'command', command });
+  } catch (error) {
+    console.error('Erreur dans /restart-esp32:', error);
     res.status(500).json({ message: 'Erreur serveur' });
   }
 });
@@ -183,7 +204,7 @@ app.get('/health', (req, res) => {
   }
 });
 
-// Gestion WebSocket pour les clients Android
+// Gestion WebSocket
 wss.on('connection', (ws) => {
   console.log('Nouveau client WebSocket connecté');
 
@@ -203,7 +224,18 @@ wss.on('connection', (ws) => {
       return;
     }
 
-    if (data.type === 'android') {
+    if (data.type === 'esp32') {
+      esp32Client = ws;
+      console.log('Client ESP32 connecté');
+      // Envoyer les configurations initiales
+      ws.send(JSON.stringify({
+        type: 'init',
+        feedingTimes: storedConfig.feedingTimes,
+        securityTimes: storedConfig.securityTimes,
+        thresholds: storedConfig.thresholds,
+        wifiConfig: storedConfig.wifiConfig
+      }));
+    } else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
         console.log('Client Android connecté, total:', androidClients.length);
@@ -226,20 +258,44 @@ wss.on('connection', (ws) => {
       } else {
         ws.send(JSON.stringify({ type: 'status', statusType: 'error', message: 'ESP32 non connecté' }));
       }
+    } else if (data.type === 'sensorData') {
+      broadcastToAndroidClients({ type: 'sensorData', data });
+    } else if (data.type === 'status') {
+      broadcastToAndroidClients({ type: 'status', statusType: data.statusType, message: data.message });
     } else if (data.type === 'request_data') {
       ws.send(JSON.stringify({ type: 'sensorData', data: storedConfig }));
     }
   });
 
+  ws.on('pong', () => {
+    console.log('Pong reçu du client');
+  });
+
   ws.on('close', () => {
-    androidClients = androidClients.filter(client => client !== ws);
-    console.log('Client Android déconnecté, total:', androidClients.length);
+    if (ws === esp32Client) {
+      esp32Client = null;
+      console.log('Client ESP32 déconnecté');
+    } else {
+      androidClients = androidClients.filter(client => client !== ws);
+      console.log('Client Android déconnecté, total:', androidClients.length);
+    }
   });
 
   ws.on('error', (error) => {
     console.error('Erreur WebSocket:', error.message);
   });
 });
+
+function broadcastToESP32(data) {
+  if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+    try {
+      esp32Client.send(JSON.stringify(data));
+      console.log('Données envoyées à l\'ESP32:', JSON.stringify(data, null, 2));
+    } catch (err) {
+      console.error('Erreur lors de l\'envoi à l\'ESP32:', err.message);
+    }
+  }
+}
 
 function broadcastToAndroidClients(data) {
   androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
