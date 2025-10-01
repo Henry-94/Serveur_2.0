@@ -24,7 +24,7 @@ let thresholds = {
 const wss = new WebSocket.Server({ port: 8080 });
 
 wss.on('connection', (ws) => {
-  console.log('Client WebSocket connecté');
+  console.log('Client WebSocket connecte');
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
@@ -36,11 +36,11 @@ wss.on('connection', (ws) => {
       });
       // Log des messages reçus
       if (data.type === 'esp32') {
-        console.log('Données capteurs reçues de l\'ESP32:', data);
+        console.log('Donnees capteurs recues de l\'ESP32:', data);
       } else if (data.type === 'android') {
-        console.log('Commande reçue de l\'application Android:', data);
+        console.log('Commande recue de l\'application Android:', data);
       } else if (data.type === 'thresholds') {
-        console.log('Seuils reçus:', data);
+        console.log('Seuils recus:', data);
       }
     } catch (error) {
       console.error('Erreur WebSocket:', error);
@@ -48,7 +48,7 @@ wss.on('connection', (ws) => {
   });
 
   ws.on('close', () => {
-    console.log('Client WebSocket déconnecté');
+    console.log('Client WebSocket deconnecte');
   });
 
   // Envoyer les seuils initiaux au client qui se connecte
@@ -65,15 +65,15 @@ app.post('/set-feeding-times', (req, res) => {
   try {
     const { feedingTimes: newTimes } = req.body;
     if (!Array.isArray(newTimes)) {
-      return res.status(400).json({ message: 'feedingTimes doit être un tableau' });
+      return res.status(400).json({ message: 'feedingTimes doit etre un tableau' });
     }
     feedingTimes = newTimes.map(time => ({
       hour: parseInt(time.hour),
       minute: parseInt(time.minute),
       foodName: time.foodName
     })).filter(time => !isNaN(time.hour) && !isNaN(time.minute) && time.foodName);
-    console.log(`Horaires d'alimentation reçus: ${JSON.stringify(feedingTimes)} at ${new Date().toISOString()}`);
-    res.status(200).json({ message: 'Horaires d'alimentation configurés' });
+    console.log(`Horaires d'alimentation recus: ${JSON.stringify(feedingTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Horaires d\'alimentation configures' });
   } catch (error) {
     console.error('Erreur dans /set-feeding-times:', error);
     res.status(500).json({ message: 'Erreur serveur' });
@@ -96,14 +96,14 @@ app.post('/set-security-times', (req, res) => {
   try {
     const { securityTimes: newTimes } = req.body;
     if (!Array.isArray(newTimes)) {
-      return res.status(400).json({ message: 'securityTimes doit être un tableau' });
+      return res.status(400).json({ message: 'securityTimes doit etre un tableau' });
     }
     securityTimes = newTimes.map(time => ({
       startTime: time.startTime,
       endTime: time.endTime
     })).filter(time => time.startTime && time.endTime && time.startTime.length === 4 && time.endTime.length === 4 && !isNaN(time.startTime) && !isNaN(time.endTime));
-    console.log(`Intervalles de sécurité reçus: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
-    res.status(200).json({ message: 'Intervalles de sécurité configurés' });
+    console.log(`Intervalles de securite recus: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Intervalles de securite configures' });
   } catch (error) {
     console.error('Erreur dans /set-security-times:', error);
     res.status(500).json({ message: 'Erreur serveur' });
@@ -113,7 +113,7 @@ app.post('/set-security-times', (req, res) => {
 // Route GET pour récupérer les intervalles de sécurité
 app.get('/getsecurity', (req, res) => {
   try {
-    console.log(`Envoi des intervalles de sécurité: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
+    console.log(`Envoi des intervalles de securite: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
     res.status(200).json({ securityTimes });
   } catch (error) {
     console.error('Erreur dans /getsecurity:', error);
@@ -129,7 +129,7 @@ app.post('/set-thresholds', (req, res) => {
       thresholds.minTemperature = parseFloat(minTemperature);
       thresholds.maxTemperature = parseFloat(maxTemperature);
       thresholds.turbidityThreshold = parseFloat(turbidityThreshold);
-      console.log(`Seuils reçus: ${JSON.stringify(thresholds)} at ${new Date().toISOString()}`);
+      console.log(`Seuils recus: ${JSON.stringify(thresholds)} at ${new Date().toISOString()}`);
       // Envoyer les seuils via WebSocket
       wss.clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
@@ -141,9 +141,9 @@ app.post('/set-thresholds', (req, res) => {
           }));
         }
       });
-      res.status(200).json({ message: 'Seuils configurés' });
+      res.status(200).json({ message: 'Seuils configures' });
     } else {
-      res.status(400).json({ message: 'Données de seuils invalides' });
+      res.status(400).json({ message: 'Donnees de seuils invalides' });
     }
   } catch (error) {
     console.error('Erreur dans /set-thresholds:', error);
@@ -185,5 +185,5 @@ app.use((err, req, res, next) => {
 });
 
 app.listen(port, () => {
-  console.log(`Serveur démarré sur le port ${port}`);
+  console.log(`Serveur demarre sur le port ${port}`);
 });
