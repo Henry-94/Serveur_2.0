@@ -27,7 +27,11 @@ app.get('/getfeeding', (req, res) => {
 });
 
 app.get('/getsecurity', (req, res) => {
-  res.json({ securityTimes });
+  const formattedSecurityTimes = securityTimes.map(time => ({
+    startTime: `${String(time.startHour).padStart(2, '0')}${String(time.startMinute).padStart(2, '0')}`,
+    endTime: `${String(time.endHour).padStart(2, '0')}${String(time.endMinute).padStart(2, '0')}`
+  }));
+  res.json({ securityTimes: formattedSecurityTimes });
 });
 
 app.get('/getthresholds', (req, res) => {
@@ -49,6 +53,9 @@ app.post('/set-feeding-times', (req, res) => {
   if (req.body.feedingTimes) {
     feedingTimes = req.body.feedingTimes;
     console.log('Horaires d\'alimentation mis à jour:', feedingTimes);
+    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+      esp32Client.send(JSON.stringify({ type: 'feeding_update', feedingTimes }));
+    }
     broadcastToAndroidClients({ type: 'status', message: 'Horaires d\'alimentation mis à jour' });
     res.json({ status: 'success', message: 'Horaires d\'alimentation mis à jour' });
   } else {
@@ -65,6 +72,13 @@ app.post('/set-security-times', (req, res) => {
       endMinute: parseInt(time.endTime.slice(2, 4))
     }));
     console.log('Intervalles de sécurité mis à jour:', securityTimes);
+    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+      const formattedSecurityTimes = req.body.securityTimes.map(time => ({
+        startTime: time.startTime,
+        endTime: time.endTime
+      }));
+      esp32Client.send(JSON.stringify({ type: 'security_update', securityTimes: formattedSecurityTimes }));
+    }
     broadcastToAndroidClients({ type: 'status', message: 'Intervalles de sécurité mis à jour' });
     res.json({ status: 'success', message: 'Intervalles de sécurité mis à jour' });
   } else {
@@ -80,6 +94,9 @@ app.post('/set-thresholds', (req, res) => {
       turbidityThreshold: req.body.thresholds.turbidityThreshold || thresholds.turbidityThreshold
     };
     console.log('Seuils mis à jour:', thresholds);
+    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+      esp32Client.send(JSON.stringify({ type: 'thresholds_update', thresholds }));
+    }
     broadcastToAndroidClients({ type: 'status', message: 'Seuils mis à jour' });
     res.json({ status: 'success', message: 'Seuils mis à jour' });
   } else {
@@ -119,102 +136,20 @@ app.get('/health', (req, res) => {
   });
 });
 
-wss.on('connection', (ws) => {
-  console.log('Nouveau client WebSocket connecté');
-
-  ws.on('message', (message) => {
-    let data;
-    try {
-      data = JSON.parse(message);
-      console.log('Message reçu:', JSON.stringify(data, null, 2));
-    } catch (err) {
-      console.error('Erreur de parsing JSON:', err.message);
-      ws.send(JSON.stringify({ type: 'error', message: `Erreur de parsing JSON: ${err.message}` }));
-      return;
-    }
-
-    if (!data.type) {
-      ws.send(JSON.stringify({ type: 'error', message: 'Type de message manquant' }));
-      return;
-    }
-
-    if (data.type === 'esp32') {
-      esp32Client = ws;
-      console.log('ESP32 connecté');
-      ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
-
-      if (data.waterLevelStatus || data.temperature || data.turbidity || data.message || data.motion) {
-        broadcastToAndroidClients(data);
-      }
-    } else if (data.type === 'android') {
-      if (!androidClients.includes(ws)) {
-        androidClients.push(ws);
-        console.log('Client Android connecté, total:', androidClients.length);
-        ws.send(JSON.stringify({ type: 'status', message: `Client Android connecté (${androidClients.length})` }));
-      }
-
-      if (data.command) {
-        const validCommands = [
-          'INLET_PUMP_ON', 'INLET_PUMP_OFF', 'OUTLET_PUMP_ON', 'OUTLET_PUMP_OFF',
-          'SECURITY_MODE_ON', 'SECURITY_MODE_OFF', 'REPLACE_WATER', 'RESET_DATE'
-        ];
-        if (!validCommands.includes(data.command)) {
-          ws.send(JSON.stringify({ type: 'error', message: 'Commande invalide' }));
-          return;
-        }
-        if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-          esp32Client.send(JSON.stringify(data));
-          console.log('Commande envoyée à ESP32:', JSON.stringify(data, null, 2));
-          ws.send(JSON.stringify({ type: 'status', message: 'Commande envoyée à l\'ESP32' }));
-        } else {
-          ws.send(JSON.stringify({ type: 'status', message: 'ESP32 non connecté' }));
-          console.log('ESP32 non connecté, commande non envoyée');
-        }
-      } else if (data.type === 'request_data') {
-        if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-          esp32Client.send(JSON.stringify({ type: 'request_data' }));
-          console.log('Demande de données envoyée à l\'ESP32');
-        } else {
-          ws.send(JSON.stringify({ type: 'status', message: 'ESP32 non connecté' }));
-        }
-      }
-    } else {
-      ws.send(JSON.stringify({ type: 'error', message: 'Type de client inconnu' }));
-    }
-  });
-
-  ws.on('close', () => {
-    if (ws === esp32Client) {
-      esp32Client = null;
-      console.log('ESP32 déconnecté');
-      broadcastToAndroidClients({ type: 'status', message: 'ESP32 déconnecté' });
-    } else {
-      androidClients = androidClients.filter(client => client !== ws);
-      console.log('Client Android déconnecté, total:', androidClients.length);
-    }
-  });
-
-  ws.on('error', (error) => {
-    console.error('Erreur WebSocket:', error.message);
-    ws.send(JSON.stringify({ type: 'error', message: `Erreur WebSocket: ${error.message}` }));
-  });
-});
-
-function broadcastToAndroidClients(data) {
-  androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
-  androidClients.forEach(client => {
-    try {
-      client.send(JSON.stringify(data));
-    } catch (err) {
-      console.error('Erreur lors de l\'envoi à un client Android:', err.message);
-    }
-  });
-}
-
-app.use((err, req, res, next) => {
-  console.error('Erreur serveur:', err.stack);
-  res.status(500).json({ message: 'Erreur interne du serveur' });
-});
+// Envoyer l'heure actuelle toutes les 5 minutes aux clients ESP32
+setInterval(() => {
+  if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+    const now = new Date();
+    const formatted = now.getFullYear() + '-' +
+      String(now.getMonth() + 1).padStart(2, '0') + '-' +
+      String(now.getDate()).padStart(2, '0') + ' ' +
+      String(now.getHours()).padStart(2, '0') + ':' +
+      String(now.getMinutes()).padStart(2, '0') + ':' +
+      String(now.getSeconds()).padStart(2, '0');
+    esp32Client.send(JSON.stringify({ type: 'time_update', time: formatted }));
+    console.log('Heure envoyée à l\'ESP32:', formatted);
+  }
+}, 300000); // 5 minutes
 
 const PORT = process.env.PORT || 8080;
 server.listen(PORT, () => {
