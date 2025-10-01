@@ -1,15 +1,33 @@
+// Vérification des dépendances nécessaires
+try {
+  require('ws');
+  require('express');
+  require('body-parser');
+  require('cors');
+} catch (e) {
+  console.error('Erreur : Les dépendances nécessaires (ws, express, body-parser, cors) ne sont pas installées.');
+  console.error('Exécutez `npm install` pour installer les dépendances.');
+  process.exit(1);
+}
+
+// Importation des modules
 const express = require('express');
 const http = require('http');
 const WebSocket = require('ws');
+const bodyParser = require('body-parser');
+const cors = require('cors');
 
+// Initialisation de l'application Express
 const app = express();
-app.use(express.json());
+app.use(cors()); // Autoriser les requêtes cross-origin
+app.use(bodyParser.json()); // Parser les corps JSON
+app.use(bodyParser.urlencoded({ extended: true })); // Parser les corps URL-encoded
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Variables pour gérer les clients et les données
 let esp32Client = null;
 let androidClients = [];
-
 let feedingTimes = [];
 let securityTimes = [];
 let thresholds = {
@@ -19,6 +37,7 @@ let thresholds = {
 };
 let wifiConfig = { ssid: '', password: '' };
 
+// Gestion des connexions WebSocket
 wss.on('connection', (ws) => {
   console.log('Nouveau client WebSocket connecté');
 
@@ -26,10 +45,10 @@ wss.on('connection', (ws) => {
     let data;
     try {
       data = JSON.parse(message);
-      console.log('Message reçu:', JSON.stringify(data, null, 2));
+      console.log('Message reçu :', JSON.stringify(data, null, 2));
     } catch (err) {
-      console.error('Erreur de parsing JSON:', err.message);
-      ws.send(JSON.stringify({ type: 'error', message: `Erreur de parsing JSON: ${err.message}` }));
+      console.error('Erreur de parsing JSON :', err.message);
+      ws.send(JSON.stringify({ type: 'error', message: `Erreur de parsing JSON : ${err.message}` }));
       return;
     }
 
@@ -38,24 +57,28 @@ wss.on('connection', (ws) => {
       return;
     }
 
+    // Gestion des messages de l'ESP32
     if (data.type === 'esp32') {
       esp32Client = ws;
       console.log('ESP32 connecté');
       ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
 
+      // Relayer les données des capteurs aux clients Android
       if (data.waterLevelStatus !== undefined || data.temperature !== undefined || data.turbidity !== undefined ||
           data.inletPumpState !== undefined || data.outletPumpState !== undefined || data.airPumpState !== undefined ||
           data.securityMode !== undefined || data.motion !== undefined) {
         broadcastToAndroidClients(data);
       }
 
+    // Gestion des messages des clients Android
     } else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
-        console.log('Client Android connecté, total:', androidClients.length);
+        console.log('Client Android connecté, total :', androidClients.length);
         ws.send(JSON.stringify({ type: 'status', message: `Client Android connecté (${androidClients.length})` }));
       }
 
+      // Gestion des commandes envoyées par Android
       if (data.command) {
         const validCommands = [
           'INLET_PUMP_ON', 'INLET_PUMP_OFF', 'OUTLET_PUMP_ON', 'OUTLET_PUMP_OFF',
@@ -68,7 +91,7 @@ wss.on('connection', (ws) => {
 
         if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
           esp32Client.send(JSON.stringify(data));
-          console.log('Commande envoyée à ESP32:', JSON.stringify(data, null, 2));
+          console.log('Commande envoyée à ESP32 :', JSON.stringify(data, null, 2));
           ws.send(JSON.stringify({ type: 'status', message: 'Commande envoyée à l\'ESP32' }));
         } else {
           ws.send(JSON.stringify({ type: 'status', message: 'ESP32 non connecté' }));
@@ -96,27 +119,28 @@ wss.on('connection', (ws) => {
       broadcastToAndroidClients({ type: 'status', message: 'ESP32 déconnecté' });
     } else {
       androidClients = androidClients.filter(client => client !== ws);
-      console.log('Client Android déconnecté, total:', androidClients.length);
+      console.log('Client Android déconnecté, total :', androidClients.length);
     }
   });
 
   ws.on('error', (error) => {
-    console.error('Erreur WebSocket:', error.message);
+    console.error('Erreur WebSocket :', error.message);
   });
 });
 
+// Fonction pour diffuser les données aux clients Android
 function broadcastToAndroidClients(data) {
   androidClients = androidClients.filter(client => client.readyState === WebSocket.OPEN);
   androidClients.forEach(client => {
     try {
       client.send(JSON.stringify(data));
     } catch (err) {
-      console.error('Erreur lors de l\'envoi à un client Android:', err.message);
+      console.error('Erreur lors de l\'envoi à un client Android :', err.message);
     }
   });
 }
 
-// Routes HTTP
+// Routes HTTP pour les horaires d'alimentation
 app.get('/getfeeding', (req, res) => {
   res.json({ feedingTimes });
 });
@@ -141,6 +165,7 @@ app.post('/set-feeding-times', (req, res) => {
   res.json({ message: 'Horaires d\'alimentation configurés' });
 });
 
+// Routes HTTP pour les horaires de sécurité
 app.get('/getsecurity', (req, res) => {
   res.json({ securityTimes });
 });
@@ -165,6 +190,7 @@ app.post('/set-security-times', (req, res) => {
   res.json({ message: 'Horaires de sécurité configurés' });
 });
 
+// Route HTTP pour les seuils
 app.post('/set-thresholds', (req, res) => {
   const { minTemperature, maxTemperature, turbidityThreshold } = req.body;
   if (typeof minTemperature !== 'number' || typeof maxTemperature !== 'number' || typeof turbidityThreshold !== 'number' ||
@@ -180,6 +206,7 @@ app.post('/set-thresholds', (req, res) => {
   res.json({ message: 'Seuils configurés' });
 });
 
+// Route HTTP pour la configuration WiFi
 app.post('/set-wifi-config', (req, res) => {
   const { ssid, password } = req.body;
   if (typeof ssid !== 'string' || typeof password !== 'string') {
@@ -194,6 +221,7 @@ app.post('/set-wifi-config', (req, res) => {
   res.json({ message: 'Configuration WiFi configurée' });
 });
 
+// Route HTTP pour l'heure actuelle (utilisée pour RESET_DATE)
 app.get('/getcurrenttime', (req, res) => {
   const now = new Date();
   const year = now.getFullYear();
@@ -206,6 +234,7 @@ app.get('/getcurrenttime', (req, res) => {
   res.json({ time: timeStr });
 });
 
+// Route HTTP pour vérifier l'état du serveur
 app.get('/health', (req, res) => {
   res.json({
     status: 'Serveur OK',
@@ -214,7 +243,14 @@ app.get('/health', (req, res) => {
   });
 });
 
-const PORT = process.env.PORT || 8080;
+// Gestion des erreurs globales
+app.use((err, req, res, next) => {
+  console.error('Erreur serveur :', err.stack);
+  res.status(500).json({ message: 'Erreur interne du serveur' });
+});
+
+// Démarrage du serveur
+const PORT = process.env.PORT || 10000;
 server.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
 });
