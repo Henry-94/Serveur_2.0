@@ -4,7 +4,7 @@ const cors = require('cors');
 const expressWs = require('express-ws');
 
 const app = express();
-const port = process.env.PORT || 3000;
+const port = process.env.PORT || 3000; // Render mappe ceci au port 443
 
 // Initialiser express-ws
 const wsInstance = expressWs(app);
@@ -61,7 +61,7 @@ app.ws('/', (ws, req) => {
   }));
 });
 
-// Routes HTTP (inchangées)
+// Routes HTTP
 app.post('/set-feeding-times', (req, res) => {
   try {
     const { feedingTimes: newTimes } = req.body;
