@@ -1,10 +1,13 @@
 const express = require('express');
 const bodyParser = require('body-parser');
 const cors = require('cors');
-const WebSocket = require('ws');
+const expressWs = require('express-ws');
 
 const app = express();
 const port = process.env.PORT || 3000;
+
+// Initialiser express-ws
+const wsInstance = expressWs(app);
 
 // Middleware
 app.use(cors());
@@ -20,16 +23,14 @@ let thresholds = {
   turbidityThreshold: 70.0
 };
 
-// WebSocket Server
-const wss = new WebSocket.Server({ port: 8080 });
-
-wss.on('connection', (ws) => {
+// WebSocket route
+app.ws('/', (ws, req) => {
   console.log('Client WebSocket connecte');
   ws.on('message', (message) => {
     try {
       const data = JSON.parse(message);
       // Relayer les messages à tous les clients connectés
-      wss.clients.forEach(client => {
+      wsInstance.getWss().clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify(data));
         }
@@ -60,7 +61,7 @@ wss.on('connection', (ws) => {
   }));
 });
 
-// Route POST pour définir les horaires d'alimentation
+// Routes HTTP (inchangées)
 app.post('/set-feeding-times', (req, res) => {
   try {
     const { feedingTimes: newTimes } = req.body;
@@ -80,7 +81,6 @@ app.post('/set-feeding-times', (req, res) => {
   }
 });
 
-// Route GET pour récupérer les horaires d'alimentation
 app.get('/getfeeding', (req, res) => {
   try {
     console.log(`Envoi des horaires d'alimentation: ${JSON.stringify(feedingTimes)} at ${new Date().toISOString()}`);
@@ -91,7 +91,6 @@ app.get('/getfeeding', (req, res) => {
   }
 });
 
-// Route POST pour définir les intervalles de sécurité
 app.post('/set-security-times', (req, res) => {
   try {
     const { securityTimes: newTimes } = req.body;
@@ -110,7 +109,6 @@ app.post('/set-security-times', (req, res) => {
   }
 });
 
-// Route GET pour récupérer les intervalles de sécurité
 app.get('/getsecurity', (req, res) => {
   try {
     console.log(`Envoi des intervalles de securite: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
@@ -121,7 +119,6 @@ app.get('/getsecurity', (req, res) => {
   }
 });
 
-// Route POST pour définir les seuils
 app.post('/set-thresholds', (req, res) => {
   try {
     const { minTemperature, maxTemperature, turbidityThreshold } = req.body;
@@ -131,7 +128,7 @@ app.post('/set-thresholds', (req, res) => {
       thresholds.turbidityThreshold = parseFloat(turbidityThreshold);
       console.log(`Seuils recus: ${JSON.stringify(thresholds)} at ${new Date().toISOString()}`);
       // Envoyer les seuils via WebSocket
-      wss.clients.forEach(client => {
+      wsInstance.getWss().clients.forEach(client => {
         if (client.readyState === WebSocket.OPEN) {
           client.send(JSON.stringify({
             type: 'thresholds',
@@ -151,7 +148,6 @@ app.post('/set-thresholds', (req, res) => {
   }
 });
 
-// Route GET pour l'heure actuelle
 app.get('/getcurrenttime', (req, res) => {
   try {
     const now = new Date();
@@ -164,7 +160,6 @@ app.get('/getcurrenttime', (req, res) => {
   }
 });
 
-// Route GET pour le statut
 app.get('/status', (req, res) => {
   try {
     res.status(200).json({
@@ -178,7 +173,6 @@ app.get('/status', (req, res) => {
   }
 });
 
-// Gestion des erreurs globales
 app.use((err, req, res, next) => {
   console.error('Erreur serveur:', err.stack);
   res.status(500).json({ message: 'Erreur interne du serveur' });
