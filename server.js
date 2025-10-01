@@ -1,11 +1,11 @@
 const express = require('express');
-const http = require('http');
+const https = require('https'); // Changé de http à https
 const WebSocket = require('ws');
 const bodyParser = require('body-parser');
 const cors = require('cors');
 
 const app = express();
-const server = http.createServer(app);
+const server = https.createServer(app); // Utiliser HTTPS
 const wss = new WebSocket.Server({ server });
 
 let esp32Client = null;
@@ -27,7 +27,12 @@ app.get('/getfeeding', (req, res) => {
 });
 
 app.get('/getsecurity', (req, res) => {
-  res.json({ securityTimes });
+  // Retourner securityTimes au format attendu (startTime: "HHMM", endTime: "HHMM")
+  const formattedSecurityTimes = securityTimes.map(time => ({
+    startTime: `${String(time.startHour).padStart(2, '0')}${String(time.startMinute).padStart(2, '0')}`,
+    endTime: `${String(time.endHour).padStart(2, '0')}${String(time.endMinute).padStart(2, '0')}`
+  }));
+  res.json({ securityTimes: formattedSecurityTimes });
 });
 
 app.get('/getthresholds', (req, res) => {
@@ -66,6 +71,14 @@ app.post('/set-security-times', (req, res) => {
     }));
     console.log('Intervalles de sécurité mis à jour:', securityTimes);
     broadcastToAndroidClients({ type: 'status', message: 'Intervalles de sécurité mis à jour' });
+    // Envoyer les securityTimes mis à jour à l'ESP32
+    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+      const formattedSecurityTimes = securityTimes.map(time => ({
+        startTime: `${String(time.startHour).padStart(2, '0')}${String(time.startMinute).padStart(2, '0')}`,
+        endTime: `${String(time.endHour).padStart(2, '0')}${String(time.endMinute).padStart(2, '0')}`
+      }));
+      esp32Client.send(JSON.stringify({ type: 'security_update', securityTimes: formattedSecurityTimes }));
+    }
     res.json({ status: 'success', message: 'Intervalles de sécurité mis à jour' });
   } else {
     res.status(400).json({ status: 'error', message: 'securityTimes manquant ou invalide' });
@@ -81,6 +94,9 @@ app.post('/set-thresholds', (req, res) => {
     };
     console.log('Seuils mis à jour:', thresholds);
     broadcastToAndroidClients({ type: 'status', message: 'Seuils mis à jour' });
+    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
+      esp32Client.send(JSON.stringify({ type: 'thresholds_update', thresholds }));
+    }
     res.json({ status: 'success', message: 'Seuils mis à jour' });
   } else {
     res.status(400).json({ status: 'error', message: 'thresholds manquant ou invalide' });
@@ -216,7 +232,7 @@ app.use((err, req, res, next) => {
   res.status(500).json({ message: 'Erreur interne du serveur' });
 });
 
-const PORT = process.env.PORT || 8080;
+const PORT = process.env.PORT || 443; // Port 443 pour HTTPS/WSS
 server.listen(PORT, () => {
   console.log(`Serveur démarré sur le port ${PORT}`);
 });
