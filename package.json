@@ -8,12 +8,12 @@
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "description": "",
+  "description": "Serveur pour le système de pisciculture",
   "dependencies": {
     "express": "^4.21.0",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
-    "express-ws": "^5.0.2"
+    "ws": "^8.18.0"
   },
   "engines": {
     "node": ">=18.0.0"
