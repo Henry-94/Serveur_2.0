@@ -1,15 +1,17 @@
 const express = require('express');
-const http = require('http');
-const WebSocket = require('ws');
 const bodyParser = require('body-parser');
 const cors = require('cors');
+const WebSocket = require('ws');
 
 const app = express();
-const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+const port = process.env.PORT || 3000;
 
-let esp32Client = null;
-let androidClients = [];
+// Middleware
+app.use(cors());
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+// Stockage en mémoire
 let feedingTimes = [];
 let securityTimes = [];
 let thresholds = {
@@ -18,140 +20,170 @@ let thresholds = {
   turbidityThreshold: 70.0
 };
 
-app.use(cors());
-app.use(bodyParser.json());
-app.use(bodyParser.urlencoded({ extended: true }));
+// WebSocket Server
+const wss = new WebSocket.Server({ port: 8080 });
 
-app.get('/getfeeding', (req, res) => {
-  res.json({ feedingTimes });
-});
-
-app.get('/getsecurity', (req, res) => {
-  const formattedSecurityTimes = securityTimes.map(time => ({
-    startTime: `${String(time.startHour).padStart(2, '0')}${String(time.startMinute).padStart(2, '0')}`,
-    endTime: `${String(time.endHour).padStart(2, '0')}${String(time.endMinute).padStart(2, '0')}`
-  }));
-  res.json({ securityTimes: formattedSecurityTimes });
-});
-
-app.get('/getthresholds', (req, res) => {
-  res.json({ thresholds });
-});
-
-app.get('/getcurrenttime', (req, res) => {
-  const now = new Date();
-  const formatted = now.getFullYear() + '-' +
-    String(now.getMonth() + 1).padStart(2, '0') + '-' +
-    String(now.getDate()).padStart(2, '0') + ' ' +
-    String(now.getHours()).padStart(2, '0') + ':' +
-    String(now.getMinutes()).padStart(2, '0') + ':' +
-    String(now.getSeconds()).padStart(2, '0');
-  res.json({ time: formatted });
-});
-
-app.post('/set-feeding-times', (req, res) => {
-  if (req.body.feedingTimes) {
-    feedingTimes = req.body.feedingTimes;
-    console.log('Horaires d\'alimentation mis à jour:', feedingTimes);
-    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-      esp32Client.send(JSON.stringify({ type: 'feeding_update', feedingTimes }));
+wss.on('connection', (ws) => {
+  console.log('Client WebSocket connecté');
+  ws.on('message', (message) => {
+    try {
+      const data = JSON.parse(message);
+      // Relayer les messages à tous les clients connectés
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify(data));
+        }
+      });
+      // Log des messages reçus
+      if (data.type === 'esp32') {
+        console.log('Données capteurs reçues de l\'ESP32:', data);
+      } else if (data.type === 'android') {
+        console.log('Commande reçue de l\'application Android:', data);
+      } else if (data.type === 'thresholds') {
+        console.log('Seuils reçus:', data);
+      }
+    } catch (error) {
+      console.error('Erreur WebSocket:', error);
     }
-    broadcastToAndroidClients({ type: 'status', message: 'Horaires d\'alimentation mis à jour' });
-    res.json({ status: 'success', message: 'Horaires d\'alimentation mis à jour' });
-  } else {
-    res.status(400).json({ status: 'error', message: 'feedingTimes manquant ou invalide' });
-  }
-});
-
-app.post('/set-security-times', (req, res) => {
-  if (req.body.securityTimes) {
-    securityTimes = req.body.securityTimes.map(time => ({
-      startHour: parseInt(time.startTime.slice(0, 2)),
-      startMinute: parseInt(time.startTime.slice(2, 4)),
-      endHour: parseInt(time.endTime.slice(0, 2)),
-      endMinute: parseInt(time.endTime.slice(2, 4))
-    }));
-    console.log('Intervalles de sécurité mis à jour:', securityTimes);
-    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-      const formattedSecurityTimes = req.body.securityTimes.map(time => ({
-        startTime: time.startTime,
-        endTime: time.endTime
-      }));
-      esp32Client.send(JSON.stringify({ type: 'security_update', securityTimes: formattedSecurityTimes }));
-    }
-    broadcastToAndroidClients({ type: 'status', message: 'Intervalles de sécurité mis à jour' });
-    res.json({ status: 'success', message: 'Intervalles de sécurité mis à jour' });
-  } else {
-    res.status(400).json({ status: 'error', message: 'securityTimes manquant ou invalide' });
-  }
-});
-
-app.post('/set-thresholds', (req, res) => {
-  if (req.body.thresholds) {
-    thresholds = {
-      minTemperature: req.body.thresholds.minTemperature || thresholds.minTemperature,
-      maxTemperature: req.body.thresholds.maxTemperature || thresholds.maxTemperature,
-      turbidityThreshold: req.body.thresholds.turbidityThreshold || thresholds.turbidityThreshold
-    };
-    console.log('Seuils mis à jour:', thresholds);
-    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-      esp32Client.send(JSON.stringify({ type: 'thresholds_update', thresholds }));
-    }
-    broadcastToAndroidClients({ type: 'status', message: 'Seuils mis à jour' });
-    res.json({ status: 'success', message: 'Seuils mis à jour' });
-  } else {
-    res.status(400).json({ status: 'error', message: 'thresholds manquant ou invalide' });
-  }
-});
-
-app.post('/set-wifi-config', (req, res) => {
-  if (req.body.ssid && req.body.password) {
-    if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-      esp32Client.send(JSON.stringify({ type: 'wifi_config', ssid: req.body.ssid, password: req.body.password }));
-      console.log('Identifiants WiFi envoyés à l\'ESP32');
-      res.json({ status: 'success', message: 'Identifiants WiFi envoyés à l\'ESP32' });
-    } else {
-      res.status(400).json({ status: 'error', message: 'ESP32 non connecté' });
-    }
-  } else {
-    res.status(400).json({ status: 'error', message: 'ssid ou password manquant' });
-  }
-});
-
-app.post('/restart-esp32', (req, res) => {
-  if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-    esp32Client.send(JSON.stringify({ type: 'command', command: 'RESTART_ESP32' }));
-    console.log('Commande de redémarrage envoyée à l\'ESP32');
-    res.json({ status: 'success', message: 'Commande de redémarrage envoyée à l\'ESP32' });
-  } else {
-    res.status(400).json({ status: 'error', message: 'ESP32 non connecté' });
-  }
-});
-
-app.get('/health', (req, res) => {
-  res.json({
-    status: 'Serveur WebSocket OK',
-    esp32Connected: !!esp32Client,
-    androidClients: androidClients.length
   });
+
+  ws.on('close', () => {
+    console.log('Client WebSocket déconnecté');
+  });
+
+  // Envoyer les seuils initiaux au client qui se connecte
+  ws.send(JSON.stringify({
+    type: 'thresholds',
+    minTemperature: thresholds.minTemperature,
+    maxTemperature: thresholds.maxTemperature,
+    turbidityThreshold: thresholds.turbidityThreshold
+  }));
 });
 
-// Envoyer l'heure actuelle toutes les 5 minutes aux clients ESP32
-setInterval(() => {
-  if (esp32Client && esp32Client.readyState === WebSocket.OPEN) {
-    const now = new Date();
-    const formatted = now.getFullYear() + '-' +
-      String(now.getMonth() + 1).padStart(2, '0') + '-' +
-      String(now.getDate()).padStart(2, '0') + ' ' +
-      String(now.getHours()).padStart(2, '0') + ':' +
-      String(now.getMinutes()).padStart(2, '0') + ':' +
-      String(now.getSeconds()).padStart(2, '0');
-    esp32Client.send(JSON.stringify({ type: 'time_update', time: formatted }));
-    console.log('Heure envoyée à l\'ESP32:', formatted);
+// Route POST pour définir les horaires d'alimentation
+app.post('/set-feeding-times', (req, res) => {
+  try {
+    const { feedingTimes: newTimes } = req.body;
+    if (!Array.isArray(newTimes)) {
+      return res.status(400).json({ message: 'feedingTimes doit être un tableau' });
+    }
+    feedingTimes = newTimes.map(time => ({
+      hour: parseInt(time.hour),
+      minute: parseInt(time.minute),
+      foodName: time.foodName
+    })).filter(time => !isNaN(time.hour) && !isNaN(time.minute) && time.foodName);
+    console.log(`Horaires d'alimentation reçus: ${JSON.stringify(feedingTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Horaires d'alimentation configurés' });
+  } catch (error) {
+    console.error('Erreur dans /set-feeding-times:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
   }
-}, 300000); // 5 minutes
+});
 
-const PORT = process.env.PORT || 8080;
-server.listen(PORT, () => {
-  console.log(`Serveur démarré sur le port ${PORT}`);
+// Route GET pour récupérer les horaires d'alimentation
+app.get('/getfeeding', (req, res) => {
+  try {
+    console.log(`Envoi des horaires d'alimentation: ${JSON.stringify(feedingTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ feedingTimes });
+  } catch (error) {
+    console.error('Erreur dans /getfeeding:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route POST pour définir les intervalles de sécurité
+app.post('/set-security-times', (req, res) => {
+  try {
+    const { securityTimes: newTimes } = req.body;
+    if (!Array.isArray(newTimes)) {
+      return res.status(400).json({ message: 'securityTimes doit être un tableau' });
+    }
+    securityTimes = newTimes.map(time => ({
+      startTime: time.startTime,
+      endTime: time.endTime
+    })).filter(time => time.startTime && time.endTime && time.startTime.length === 4 && time.endTime.length === 4 && !isNaN(time.startTime) && !isNaN(time.endTime));
+    console.log(`Intervalles de sécurité reçus: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ message: 'Intervalles de sécurité configurés' });
+  } catch (error) {
+    console.error('Erreur dans /set-security-times:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route GET pour récupérer les intervalles de sécurité
+app.get('/getsecurity', (req, res) => {
+  try {
+    console.log(`Envoi des intervalles de sécurité: ${JSON.stringify(securityTimes)} at ${new Date().toISOString()}`);
+    res.status(200).json({ securityTimes });
+  } catch (error) {
+    console.error('Erreur dans /getsecurity:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route POST pour définir les seuils
+app.post('/set-thresholds', (req, res) => {
+  try {
+    const { minTemperature, maxTemperature, turbidityThreshold } = req.body;
+    if (minTemperature !== undefined && maxTemperature !== undefined && turbidityThreshold !== undefined) {
+      thresholds.minTemperature = parseFloat(minTemperature);
+      thresholds.maxTemperature = parseFloat(maxTemperature);
+      thresholds.turbidityThreshold = parseFloat(turbidityThreshold);
+      console.log(`Seuils reçus: ${JSON.stringify(thresholds)} at ${new Date().toISOString()}`);
+      // Envoyer les seuils via WebSocket
+      wss.clients.forEach(client => {
+        if (client.readyState === WebSocket.OPEN) {
+          client.send(JSON.stringify({
+            type: 'thresholds',
+            minTemperature: thresholds.minTemperature,
+            maxTemperature: thresholds.maxTemperature,
+            turbidityThreshold: thresholds.turbidityThreshold
+          }));
+        }
+      });
+      res.status(200).json({ message: 'Seuils configurés' });
+    } else {
+      res.status(400).json({ message: 'Données de seuils invalides' });
+    }
+  } catch (error) {
+    console.error('Erreur dans /set-thresholds:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route GET pour l'heure actuelle
+app.get('/getcurrenttime', (req, res) => {
+  try {
+    const now = new Date();
+    const timeStr = now.toISOString().slice(0, 19).replace('T', ' ');
+    console.log(`Envoi de l'heure actuelle: ${timeStr}`);
+    res.status(200).json({ time: timeStr });
+  } catch (error) {
+    console.error('Erreur dans /getcurrenttime:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Route GET pour le statut
+app.get('/status', (req, res) => {
+  try {
+    res.status(200).json({
+      message: 'Serveur actif',
+      feedingTimesSet: feedingTimes.length > 0,
+      securityTimesSet: securityTimes.length > 0
+    });
+  } catch (error) {
+    console.error('Erreur dans /status:', error);
+    res.status(500).json({ message: 'Erreur serveur' });
+  }
+});
+
+// Gestion des erreurs globales
+app.use((err, req, res, next) => {
+  console.error('Erreur serveur:', err.stack);
+  res.status(500).json({ message: 'Erreur interne du serveur' });
+});
+
+app.listen(port, () => {
+  console.log(`Serveur démarré sur le port ${port}`);
 });
