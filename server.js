@@ -58,20 +58,20 @@ wss.on('connection', (ws) => {
     }
 
     // Gestion des messages de l'ESP32
-    if (data.type === 'esp32') {
-      esp32Client = ws;
-      console.log('ESP32 connecté');
-      ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
+// Gestion des messages de l'ESP32
+if (data.type === 'esp32') {
+  esp32Client = ws;
+  console.log('ESP32 connecté');
+  ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
 
-      // Relayer les données des capteurs aux clients Android
-      if (data.waterLevelStatus !== undefined || data.temperature !== undefined || data.turbidity !== undefined ||
-          data.inletPumpState !== undefined || data.outletPumpState !== undefined || data.airPumpState !== undefined ||
-          data.securityMode !== undefined || data.motion !== undefined) {
-        broadcastToAndroidClients(data);
-      }
-
-    // Gestion des messages des clients Android
-    } else if (data.type === 'android') {
+  // Relayer les données des capteurs + l'heure RTC aux clients Android
+  if (data.waterLevelStatus !== undefined || data.temperature !== undefined || data.turbidity !== undefined ||
+      data.inletPumpState !== undefined || data.outletPumpState !== undefined || data.airPumpState !== undefined ||
+      data.securityMode !== undefined || data.motion !== undefined ||
+      data.rtc !== undefined) {   //  ajout de rtc ici
+    broadcastToAndroidClients(data);
+  }
+}else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
         console.log('Client Android connecté, total :', androidClients.length);
