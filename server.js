@@ -58,20 +58,19 @@ wss.on('connection', (ws) => {
     }
 
     // Gestion des messages de l'ESP32
-// Gestion des messages de l'ESP32
-if (data.type === 'esp32') {
-  esp32Client = ws;
-  console.log('ESP32 connecté');
-  ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
+    if (data.type === 'esp32') {
+      esp32Client = ws;
+      console.log('ESP32 connecté');
+      ws.send(JSON.stringify({ type: 'status', message: 'ESP32 connecté au serveur' }));
 
-  // Relayer les données des capteurs + l'heure RTC aux clients Android
-  if (data.waterLevelStatus !== undefined || data.temperature !== undefined || data.turbidity !== undefined ||
-      data.inletPumpState !== undefined || data.outletPumpState !== undefined || data.airPumpState !== undefined ||
-      data.securityMode !== undefined || data.motion !== undefined ||
-      data.rtc !== undefined) {   //  ajout de rtc ici
-    broadcastToAndroidClients(data);
-  }
-}else if (data.type === 'android') {
+      // Relayer les données des capteurs + l'heure RTC aux clients Android
+      if (data.waterLevelStatus !== undefined || data.temperature !== undefined || data.turbidity !== undefined ||
+          data.inletPumpState !== undefined || data.outletPumpState !== undefined || data.airPumpState !== undefined ||
+          data.securityMode !== undefined || data.motion !== undefined ||
+          data.rtc !== undefined) {   // ajout de rtc ici
+        broadcastToAndroidClients(data);
+      }
+    } else if (data.type === 'android') {
       if (!androidClients.includes(ws)) {
         androidClients.push(ws);
         console.log('Client Android connecté, total :', androidClients.length);
@@ -82,7 +81,8 @@ if (data.type === 'esp32') {
       if (data.command) {
         const validCommands = [
           'INLET_PUMP_ON', 'INLET_PUMP_OFF', 'OUTLET_PUMP_ON', 'OUTLET_PUMP_OFF',
-          'SECURITY_MODE_ON', 'SECURITY_MODE_OFF', 'REPLACE_WATER', 'RESET_DATE', 'RESTART_ESP32'
+          'SECURITY_MODE_ON', 'SECURITY_MODE_OFF', 'REPLACE_WATER', 'STOP_WATER_REPLACEMENT',
+          'RESET_DATE', 'RESTART_ESP32'
         ];
         if (!validCommands.includes(data.command)) {
           ws.send(JSON.stringify({ type: 'error', message: 'Commande invalide' }));
